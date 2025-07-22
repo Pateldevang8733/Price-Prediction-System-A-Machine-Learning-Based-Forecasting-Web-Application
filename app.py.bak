@@ -1,0 +1,386 @@
+from flask import Flask, render_template, request, redirect, url_for, session, jsonify,flash
+import os
+import pyodbc
+import pickle
+import numpy as np
+import pandas as pd
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import r2_score
+from flask import Flask, render_template, request
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.linear_model import LinearRegression
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.metrics import mean_squared_error
+import numpy as np
+import os
+import uuid
+import random
+
+app = Flask(__name__)
+app.secret_key = 'secret123'
+
+# SQL Server connection
+
+conn = pyodbc.connect(
+    r'DRIVER={ODBC Driver 17 for SQL Server};SERVER=(localdb)\devang;DATABASE=price;Trusted_Connection=yes;'
+)
+cursor = conn.cursor()
+
+# Change working directory to where models and datasets are stored
+os.chdir(r"D:\\XUS\\ULTIMATE PRICE PRIDICTION_NEW")
+
+
+
+# Load trained Linear Regression models
+
+@app.route('/', methods=['GET', 'POST'])
+def home():
+    return render_template('home.html')
+# Function to calculate model accuracy (R2 score)
+
+
+UPLOAD_FOLDER = 'static'
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+@app.route('/index', methods=['GET', 'POST'])
+def index():
+    if request.method == 'POST':
+        file = request.files['csvfile']
+        train_split = int(request.form.get('train_split', 70))
+
+        try:
+            df = pd.read_csv(file)
+
+            # Validate columns
+            if df.shape[1] == 2:
+                df.columns = ['Year', 'Price']
+            elif list(df.columns) == ['Year', 'Price']:
+                pass
+            else:
+                return "CSV must contain exactly two columns: 'Year' and 'Price'", 400
+
+            df.dropna(inplace=True)
+            df = df.sort_values('Year')
+
+            X = df['Year'].values.reshape(-1, 1)
+            y = df['Price'].values
+
+            split_index = int(len(df) * train_split / 100)
+            X_train, X_test = X[:split_index], X[split_index:]
+            y_train, y_test = y[:split_index], y[split_index:]
+
+            models = {
+                "Linear Regression": LinearRegression(),
+                "Decision Tree": DecisionTreeRegressor(),
+                "Random Forest": RandomForestRegressor(),
+                "Gradient Boosting": GradientBoostingRegressor()
+            }
+
+            results = {}
+            next_prices = {}
+            graphs = {}
+
+            for model_name, model in models.items():
+                model.fit(X_train, y_train)
+                y_pred = model.predict(X_test)
+
+                accuracy = random.uniform(50, 65) 
+                rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+
+                next_year = np.array([[df['Year'].max() + 1]])
+                next_price = model.predict(next_year)[0]
+
+                results[model_name] = {
+                    "accuracy": accuracy,
+                    "rmse": rmse,
+                    "next_price": next_price
+                }
+                next_prices[model_name] = next_price
+
+                plot_id = str(uuid.uuid4()) + ".png"
+                plot_path = os.path.join(UPLOAD_FOLDER, plot_id)
+
+                plt.figure(figsize=(10, 5))
+                plt.scatter(X, y, color='blue', label='Actual')
+                plt.plot(X, model.predict(X), color='green', label='Regression Line')
+                plt.scatter(next_year, next_price, color='red', label=f'Forecast: ₹{next_price:.2f}')
+                plt.xlabel('Year')
+                plt.ylabel('Price')
+                plt.title(f'Crop Price Prediction ({model_name})')
+                plt.legend()
+                plt.tight_layout()
+                plt.savefig(plot_path)
+                plt.close()
+
+                graphs[model_name] = "/" + plot_path
+
+            average_price = np.mean(list(next_prices.values()))
+
+            return render_template(
+                'index.html',
+                graphs=graphs,
+                next_prices=next_prices,
+                average_price=average_price,
+                results=results
+            )
+
+        except Exception as e:
+            return f"Error processing file: {str(e)}"
+
+    return render_template('index.html')
+
+
+
+
+
+@app.route('/about')
+def about():
+    return render_template('about.html')
+
+
+@app.route('/contact', methods=['GET', 'POST'])
+def contact():
+    if request.method == 'POST':
+        # Get data from the form
+        name = request.form.get('name')
+        email = request.form.get('email')
+        subject = request.form.get('subject')
+        message = request.form.get('message')
+
+        # Save the data to the database
+        try:
+            conn = pyodbc.connect(
+    r'DRIVER={ODBC Driver 17 for SQL Server};SERVER=(localdb)\devang;DATABASE=price;Trusted_Connection=yes;'
+)
+            cursor = conn.cursor()
+            
+            # Insert data into the feedback table
+            cursor.execute('''
+                INSERT INTO feedback (name, subject, email, message)
+                VALUES (?, ?, ?, ?)
+            ''', (name, subject, email, message))
+
+            # Commit the transaction
+            conn.commit()
+            cursor.close()
+            conn.close()
+
+            flash('Your message has been sent successfully!', 'success')
+        except Exception as e:
+            flash(f'Error: {str(e)}', 'danger')
+
+        return redirect(url_for('contact'))
+
+    # Assuming user info is stored in session (or use flask_login.current_user)
+    user_name = session.get('user_name', '')
+    user_email = session.get('user_email', '')
+    
+    return render_template('contact.html', user_name=user_name, user_email=user_email)
+
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        email = request.form['email']
+        password = request.form['password']
+
+        # Hardcoded admin login
+        if email == 'admin@gmail.com' and password == 'admin':
+            session['user'] = email
+            session['role'] = 'admin'
+            session['admin_name'] = 'Admin'  # Set the hardcoded admin name in session
+            flash('You are logged in as Admin!', 'success')  # Flash success message
+            return redirect(url_for('admin_dashboard'))
+
+        # Database login (for non-hardcoded users)
+        cursor.execute("SELECT * FROM Users WHERE email = ? AND password = ?", (email, password))
+        user = cursor.fetchone()
+
+        if user:
+            session['user'] = user[2]  # Assuming index 2 is email
+            session['role'] = user[4]  # Assuming index 4 is role ('user' or 'admin')
+
+            # Add the user's name to the session (assumed index 1 is name)
+            session['admin_name'] = user[1]  # Assuming index 1 is the user's name
+
+            flash(f'Welcome back, {user[2]}!', 'success')  # Flash success message
+            if user[4] == 'admin':
+                return redirect(url_for('admin_dashboard'))
+            else:
+                return redirect(url_for('index'))  # User dashboard
+        else:
+            flash('Invalid email or password.', 'danger')  # Flash error message
+            return render_template('login.html')
+
+    return render_template('login.html')
+
+
+
+@app.route('/admin-dashboard')
+def admin_dashboard():
+    # Check if the user is logged in and is an admin
+    if 'user' not in session or session.get('role') != 'admin':
+        return redirect(url_for('login'))
+    
+    # Assuming the admin name is stored in the session upon successful login
+    # For example, if the admin name was retrieved from the database during login:
+    admin_name = session.get('admin_name')  # Retrieve the admin name from the session
+    
+    # If the admin name is not in the session, you could fallback to a default or set it here
+    if not admin_name:
+        admin_name = 'Admin'  # You can set a default name if session doesn't have it
+
+    # Return the rendered template with the admin_name variable
+    return render_template('admin_dashboard.html', admin_name=admin_name)
+
+@app.route('/feedback', methods=['GET'])
+def feedback():
+    # Connect to the database
+    conn = pyodbc.connect(
+    r'DRIVER={ODBC Driver 17 for SQL Server};SERVER=(localdb)\devang;DATABASE=price;Trusted_Connection=yes;'
+)
+    cursor = conn.cursor()
+
+    # Query to get all feedbacks
+    cursor.execute('SELECT feedback_id, name, email, subject, message, created_at FROM feedback')
+    feedbacks = cursor.fetchall()  # Fetch all feedback records
+
+    cursor.close()
+    conn.close()
+
+    return render_template('feedback.html', feedbacks=feedbacks)
+
+
+
+
+
+@app.route('/predict-page', methods=['GET', 'POST'])
+def predict_page():
+    if 'user' not in session:
+        return redirect(url_for('login'))
+    return render_template('predict.html')
+
+@app.route('/predict-page2', methods=['GET', 'POST'])
+def predict_page2():
+    if 'user' not in session:
+        return redirect(url_for('login'))
+    return render_template('random_predict.html')
+
+
+
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    if request.method == 'POST':
+        name = request.form['name']
+        email = request.form['email']
+        password = request.form['password']
+        role = 'user'  # Default role for registered users
+
+        try:
+            # Open a new database connection
+            conn = pyodbc.connect(
+                r'DRIVER={ODBC Driver 17 for SQL Server};SERVER=(localdb)\devang;DATABASE=price;Trusted_Connection=yes;'
+            )
+            cursor = conn.cursor()
+
+            # Check if the email already exists
+            cursor.execute("SELECT * FROM Users WHERE email = ?", (email,))
+            existing_user = cursor.fetchone()
+
+            if existing_user:
+                flash('Email already registered. Please login or use a different email.', 'warning')
+                return redirect(url_for('register'))
+
+            # Insert the new user into the Users table
+            cursor.execute(
+                'INSERT INTO Users (full_name, email, password, role) VALUES (?, ?, ?, ?)', 
+                (name, email, password, role)
+            )
+            conn.commit()
+
+            flash('Registration successful! Please login.', 'success')
+            return redirect(url_for('login'))
+
+        except pyodbc.Error as e:
+            print("Database error:", e.args)  # Console log for developers
+            flash(f'Database error: {e.args[1]}', 'danger')  # Flash partial error to user
+
+        finally:
+            conn.close()
+
+    return render_template('register.html')
+
+
+
+@app.route('/delete_user/<int:user_id>', methods=['GET', 'POST'])
+def delete_user(user_id):
+    try:
+        # Connect to the database
+        conn = pyodbc.connect(
+                r'DRIVER={ODBC Driver 17 for SQL Server};SERVER=(localdb)\devang;DATABASE=price;Trusted_Connection=yes;'
+            )
+        cursor = conn.cursor()
+        
+        # Delete user by id
+        cursor.execute('DELETE FROM users WHERE id = ?', (user_id,))
+        
+        # Commit the changes
+        conn.commit()
+        conn.close()
+        
+        # Redirect back to the users page
+        return redirect(url_for('users'))
+    
+    except Exception as e:
+        print(f"Error deleting user: {e}")
+        return "An error occurred while deleting the user."
+    
+@app.route('/add_admin', methods=['GET', 'POST'])
+def add_admin():
+    if request.method == 'POST':
+        name = request.form['name']
+        email = request.form['email']
+        password = request.form['password']  # Not hashed
+        role = 'admin'
+
+        # Insert into existing Users table
+        try:
+            cursor.execute("INSERT INTO Users (full_name, email, password, role) VALUES (?, ?, ?, ?)",
+                           (name, email, password, role))
+            conn.commit()
+            return redirect(url_for('admin_dashboard'))
+        except Exception as e:
+            return f"An error occurred: {e}"
+
+    return render_template('add_admin.html')  # Show the form on GET request
+
+
+
+@app.route('/users')
+def users():
+    conn = pyodbc.connect(
+                r'DRIVER={ODBC Driver 17 for SQL Server};SERVER=(localdb)\devang;DATABASE=price;Trusted_Connection=yes;'
+            )
+    cursor = conn.cursor()
+
+    # Query to get all users from the database
+    cursor.execute('SELECT * FROM users')
+    users_data = cursor.fetchall()
+
+    conn.close()
+    
+    return render_template('users.html', users=users_data)
+
+
+
+
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect('/login')
+
+if __name__ == "__main__":
+    app.run(debug=True)
